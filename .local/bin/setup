@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+ln -sf .local/etc/envrc .envrc
+command -v direnv &>/dev/null && direnv allow
