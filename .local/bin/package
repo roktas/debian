@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+version=${VERSION:-$(date +"%Y%m%d")}
+codename=bookworm
+provider=virtualbox
+box=${codename}_${version}_${provider}.box
+
+vagrant package --output "$box" --vagrantfile .local/etc/Vagrantfile
+md5sum "$box" >MD5SUM
