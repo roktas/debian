@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+provision=provision
+provider=virtualbox
+
+vagrant destroy -f || true
+vagrant up --provision-with "$provision" --provider "$provider"
+vagrant halt
