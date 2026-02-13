@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+box=$(find "$PWD" -type f -name '*.box' ! -size 0 | head -n 1)
+
+if [[ -n $box ]]; then
+	mkdir -p .local/tmp && cd .local/tmp || exit
+
+	vagrant box add -f --name test "$box"
+	vagrant init -f -m test
+	vagrant up
+	vagrant ssh "$@"
+else
+	echo >&2 "No box found."
+	exit 1
+fi
