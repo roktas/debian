@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+if [[ -f .local/tmp/Vagrantfile ]]; then
+	cd .local/tmp || exit
+			
+	vagrant destroy -f
+	vagrant box remove -f test
+else
+	echo >&2 "No Vagrantfile at .local/tmp."
+	exit 1
+fi

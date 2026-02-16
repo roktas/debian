@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")"/../.. || exit
+
+.local/bin/unplay || true
+
+rm -rf ./*.box ./*.iso MD5SUM .local/tmp

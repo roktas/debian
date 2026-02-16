@@ -1,0 +1,447 @@
+#!/usr/bin/env bash
+
+set -euo pipefail; [[ -z ${TRACE:-} ]] || set -x
+
+readonly DEFAULT_GITHUB=https://github.com/roktas
+readonly DEFAULT_REPO=/usr/local/src/debian
+readonly DEFAULT_SYMLINK=/usr/local/bin/debian
+
+declare -a BUNDLES=()
+declare -a SINGLES=()
+declare COMMAND=""
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------------------------------------------------
+
+abort() {
+	warn "$@"
+	exit 1
+}
+
+usage() {
+	cat >&2 <<-'EOF'
+		Usage:
+		  debian boot [--github URL] [--branch NAME]
+		  debian install [BUNDLE|SCRIPT ...]
+		  debian update [BUNDLE|SCRIPT ...]
+		  debian help
+
+		Commands:
+		  boot     Prepare host, ensure repository, link executable, run default bundle.
+		  install  Run selected bundles/scripts with install mode.
+		  update   Run selected bundles/scripts with update mode.
+
+		Arguments:
+		  BUNDLE   Bundle name, for example: default, minimal, terminal.
+		  SCRIPT   Script path without .sh suffix, for example: terminal/git.
+
+		Notes:
+		  When no bundle/script is given, the default bundle is used.
+	EOF
+}
+
+enter() {
+	warn "==> $1"
+	warn ""
+	builtin pushd "$1" >/dev/null
+}
+
+exe() {
+	/usr/bin/env bash "$@"
+}
+
+leave() {
+	builtin popd >/dev/null
+}
+
+run() {
+	local file=$1
+
+	warn "--> $file"
+	exe "${file}.sh" "$COMMAND"
+	warn ""
+}
+
+validate() {
+	local path=$1
+
+	[[ -d $path/.git ]] || return 1
+	[[ -d $path/foundation ]] || return 1
+	[[ -f $path/debian ]] || return 1
+}
+
+warn() {
+	echo -e "$*" >&2
+}
+
+whereami() {
+	local file
+	local root
+
+	file=$(readlink -f -- "${BASH_SOURCE[0]:-$0}") || return 1
+	root=$(dirname -- "$file") || return 1
+	[[ -d $root/foundation ]] || return 1
+
+	printf '%s\n' "$root"
+}
+
+# Predicators
+container()  { dockerized || [[ $(systemd-detect-virt -c) != none ]]; }
+dockerized() { [[ -e /.dockerenv ]];                                  }
+graphical()  { [[ -n ${DISPLAY:-} ]];                                 }
+physical()   { ! dockerized && [[ $(systemd-detect-virt) == none ]];  }
+virtual()    { ! physical;                                            }
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Bundles
+# ----------------------------------------------------------------------------------------------------------------------
+
+bundle.minimal() {
+	bundle.foundation
+	bundle.terminal
+	bundle.runtime
+	bundle.desktop
+}
+
+bundle.foundation() {
+	enter foundation
+		run foundation
+
+		run standard
+		run locale
+		run timezone
+		run tweak
+	leave
+}
+
+bundle.terminal() {
+	enter terminal
+		run terminal
+
+		run git
+		run fish
+		run nvim
+		run vifm
+
+		run bat
+		run crush
+		run direnv
+		run fd
+		run fzf
+		run ripgrep
+		run slides
+		run sudo
+		run ttyd
+		run yazi
+		run zoxide
+
+		graphical || run tmux
+	leave
+}
+
+bundle.runtime() {
+	enter runtime
+		run runtime
+
+		run go
+		run javascript
+		run lua
+		run markdown
+		run ruby
+		run python
+		run shell
+		run tex
+	leave
+}
+
+bundle.desktop() {
+	! graphical || {
+		enter desktop
+			run desktop
+
+			run chrome
+			run dropbox
+			run dropignore
+			run fonts
+			run graphics
+			run laptop
+			run obsidian
+			run printer
+			run vpn
+			run vscode
+		leave
+	}
+}
+
+bundle.virtualization() {
+	enter virtualization
+		run docker
+		container || run virtualbox
+		virtual   || run hashicorp
+	leave
+}
+
+bundle.clean() {
+	enter foundation
+		run clean
+	leave
+}
+
+bundle.default() {
+	bundle.foundation
+	bundle.terminal
+	bundle.runtime
+	bundle.desktop
+	bundle.virtualization
+	bundle.clean
+}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Boot
+# ----------------------------------------------------------------------------------------------------------------------
+
+boot.logging() {
+	case ${1:-} in
+	on)
+		local logfile
+
+		logfile="${TMPDIR:-/tmp}"/"${0##*/}"-"$(date --iso-8601=seconds)".log
+		exec > >(tee "$logfile") 2>&1
+		;;
+	off)
+		local tty
+
+		tty=$(tty 2>/dev/null) || return 0
+		exec &>"$tty"
+		;;
+	*)
+		abort "Unknown logging action: $1"
+	esac
+}
+
+boot.prepare() {
+	local github=$1
+	local branch=${2:-}
+	local codename
+	local workdir
+
+	warn "... Preparing bootstrap"
+
+	if grep -q "^NAME=.*[Dd]ebian" /etc/os-release; then
+		codename=$(. /etc/os-release && echo "$VERSION_CODENAME") && cat >/etc/apt/sources.list <<-EOF
+			deb http://ftp.tr.debian.org/debian/ $codename main non-free-firmware
+			deb http://security.debian.org/debian-security $codename-security main non-free-firmware
+			deb http://ftp.tr.debian.org/debian/ $codename-updates main non-free-firmware
+		EOF
+	fi
+
+	export DEBIAN_FRONTEND=noninteractive && apt-get -y update && apt-get -y install --no-install-recommends \
+		curl                                                                                             \
+		git                                                                                              \
+		jq                                                                                               \
+		libarchive-tools                                                                                 \
+		lsb-release                                                                                      \
+		unzip                                                                                            \
+		xz-utils                                                                                         \
+		zstd                                                                                             \
+		#
+
+	if workdir=$(whereami); then
+		cd "$workdir"
+		return
+	fi
+
+	workdir=$DEFAULT_REPO
+
+	if [[ -e $workdir ]]; then
+		validate "$workdir" || abort "Path exists but is not a valid debian repository: $workdir."
+		warn "... Using existing repository in $workdir."
+		cd "$workdir"
+	else
+		install -d -- "$(dirname -- "$workdir")"
+		GIT_CONFIG_NOSYSTEM=1 git clone --filter=blob:none ${branch:+--branch="$branch"} "$github"/debian "$workdir"
+		cd "$workdir"
+	fi
+}
+
+boot.link() {
+	local repo=$PWD
+
+	install -d -- "$(dirname -- "$DEFAULT_SYMLINK")"
+	ln -sfn -- "$repo/debian" "$DEFAULT_SYMLINK"
+	warn "... Linked $DEFAULT_SYMLINK -> $repo/debian."
+}
+
+boot.main() {
+	bundle.default
+}
+
+boot.user() {
+	local github=$1
+	local branch=${2:-}
+
+	if [[ -z ${NO_DOTFILES:-} ]]; then
+		warn "... Bootstrapping dotfiles"
+
+		sudo -u '#1000' bash -s -- "$github" "$branch" <<-'EOF'
+			xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+			mkdir -p "$xdg_data_home" && cd "$xdg_data_home"
+			GIT_CONFIG_NOSYSTEM=1 git clone --filter=blob:none ${2:+--branch="$2"} ${1}/dotfiles && cd dotfiles
+			bash install.sh
+		EOF
+	fi
+}
+
+boot() {
+	local branch=
+	local github=$DEFAULT_GITHUB
+
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--branch)
+			shift
+			[[ $# -gt 0 && $1 != --* ]] || abort "Missing value for --branch."
+			branch=$1
+			;;
+		--branch=*)
+			branch=${1#*=}
+			[[ -n $branch ]] || abort "Missing value for --branch."
+			;;
+		--github)
+			shift
+			[[ $# -gt 0 && $1 != --* ]] || abort "Missing value for --github."
+			github=$1
+			;;
+		--github=*)
+			github=${1#*=}
+			[[ -n $github ]] || abort "Missing value for --github."
+			;;
+		-h|--help)
+			usage
+			return 0
+			;;
+		*)
+			usage
+			abort "Unknown option for boot: $1."
+			;;
+		esac
+		shift
+	done
+
+	warn "... Bootstrapping"
+
+	boot.logging on
+
+	boot.prepare "$github" "$branch"
+	boot.link
+	boot.main
+	boot.user "$github" "$branch"
+
+	boot.logging off
+}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Install
+# ----------------------------------------------------------------------------------------------------------------------
+
+install() {
+	warn "... Installing"
+
+	local bundle
+	for bundle in "${BUNDLES[@]}"; do
+		"bundle.$bundle"
+	done
+
+	local single
+	for single in "${SINGLES[@]}"; do
+		run "$single"
+	done
+}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Update
+# ----------------------------------------------------------------------------------------------------------------------
+
+update() {
+	warn "... Updating"
+
+	install
+}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------------------------------------------------
+
+initialize() {
+	local root
+	root=$(whereami) || abort "Cannot determine repository root."
+
+	cd "$root"
+
+	local -A seen=()
+
+	local arg
+	for arg; do
+		if [[ $arg == */* ]]; then
+			[[ -n ${seen["$arg"]:-} ]] && continue
+			[[ -f ${arg}.sh ]] || abort "Script not found: ${arg}.sh."
+
+			SINGLES+=("$arg")
+			seen["$arg"]=1
+			continue
+		fi
+
+		[[ -n ${seen["$arg"]:-} ]] && continue
+		declare -F "bundle.$arg" &>/dev/null || abort "Bundle not found: $arg."
+
+		BUNDLES+=("$arg")
+		seen["$arg"]=1
+	done
+
+	if [[ ${#BUNDLES[@]} -eq 0 && ${#SINGLES[@]} -eq 0 ]]; then
+		BUNDLES=(default)
+	fi
+
+}
+
+main() {
+	local command=${1:-}
+	[[ -z $command ]] || shift
+
+	if [[ -z $command ]]; then
+		if [[ -t 0 ]]; then
+			usage
+			abort "Command is required."
+		fi
+
+		command=boot
+	fi
+
+	readonly COMMAND=$command
+
+	if [[ $COMMAND == help ]]; then
+		usage
+		return 0
+	fi
+
+	[[ ${EUID:-} -eq 0 ]] || abort "You must be root."
+
+	case $COMMAND in
+	boot)
+		boot "$@"
+		;;
+	install)
+		initialize "$@" && install
+		;;
+	update)
+		initialize "$@" && update
+		;;
+	*)
+		usage
+		abort "Unknown command: $COMMAND."
+		;;
+	esac
+}
+
+main "$@"

@@ -1,0 +1,12 @@
+name: Lint
+on:   [push, pull_request, workflow_dispatch]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install 🥁
+      run: sudo apt-get -y update && sudo apt-get -y install shellcheck
+    - name: Checkout 🛎️
+      uses: actions/checkout@v4
+    - name: Lint 🔬
+      run: shellcheck $(find . -name '*.sh')
